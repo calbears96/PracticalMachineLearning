@@ -1,0 +1,184 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Mike G."
+date: "4/25/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd('~/Documents/HopkinsDataScience/')
+```
+
+## Loading the data
+```{r}
+pml_training = read.csv('~/Documents/HopkinsDataScience/PracticalMachineLearning/pml-training.csv')
+pml_testing = read.csv('~/Documents/HopkinsDataScience/PracticalMachineLearning/pml-testing.csv')
+```
+
+# Background
+The data come from a weight lifting dataset where participants were asked to
+perform one set of 10 repititions of the unilateral dumbbell biceps curl in
+five different fashions. 
+
+The variable 'classe' is divided into 5 factors: A, B, C, D, and E. 
+* A is exactly according to specification
+* B is throwing the elbows to the front
+* C is lifting the dumbbell only halfway
+* D is lowering the dumbbell only halfway
+* E is throwing the hips to the front
+
+# Goal
+Using a variety of machine learning techniques, we will use the model with the 
+highest accuracy as the model to use for prediction on the testing data set. In
+particular, we are predicting the manner in which the subjects in the testing
+dataset performed the exercise (dumbbell biceps curl).
+
+```{r}
+#load relevant libraries
+library(caret, quietly = TRUE)
+library(randomForest, quietly = TRUE)
+library(rpart, quietly = TRUE)
+library(RColorBrewer, quietly = TRUE)
+```
+
+Set the seed to 1203.
+```{r}
+set.seed(1203)
+```
+
+# Partition the training set
+We'll take the original training set and create a partition: 70% to the new
+training set and 30% to a testing set. The testing set will be used as cross-validation
+for the model built using the training set. In other words, 70% of the training
+dataset will be used to build the model. Then, the model will be tested on the
+other 30% of the data (named 'subTesting').
+```{r}
+inTrain = createDataPartition(y=pml_training$classe, p=.7, list=FALSE)
+subTraining = pml_training[inTrain,]
+subTesting = pml_training[-inTrain,]
+```
+The subTraining dataset contains `r nrow(subTraining)` observations while the
+subTesting dataset contains `r nrow(subTesting)` observations.
+
+# Data cleaning
+We need to clean the data before modeling. The first step is to remove any 
+timestamp, name, and window data as they aren't relevant as predictors.
+
+```{r}
+Cleaner = grep('name|timestamp|window', colnames(subTraining), value=FALSE)
+subTraining = subTraining[,-Cleaner]
+```
+
+Next, we find possible non-zero variance variables in the training data. And
+then remove them.
+```{r}
+subDataNZV = nearZeroVar(subTraining, saveMetrics=TRUE)
+
+#grab the variables that make sense to use as predictors
+subNZVariables = names(subTraining) %in% c("new_window", "kurtosis_roll_belt", "kurtosis_picth_belt",
+"kurtosis_yaw_belt", "skewness_roll_belt", "skewness_roll_belt.1", "skewness_yaw_belt",
+"max_yaw_belt", "min_yaw_belt", "amplitude_yaw_belt", "avg_roll_arm", "stddev_roll_arm",
+"var_roll_arm", "avg_pitch_arm", "stddev_pitch_arm", "var_pitch_arm", "avg_yaw_arm",
+"stddev_yaw_arm", "var_yaw_arm", "kurtosis_roll_arm", "kurtosis_picth_arm",
+"kurtosis_yaw_arm", "skewness_roll_arm", "skewness_pitch_arm", "skewness_yaw_arm",
+"max_roll_arm", "min_roll_arm", "min_pitch_arm", "amplitude_roll_arm", "amplitude_pitch_arm",
+"kurtosis_roll_dumbbell", "kurtosis_picth_dumbbell", "kurtosis_yaw_dumbbell", "skewness_roll_dumbbell",
+"skewness_pitch_dumbbell", "skewness_yaw_dumbbell", "max_yaw_dumbbell", "min_yaw_dumbbell",
+"amplitude_yaw_dumbbell", "kurtosis_roll_forearm", "kurtosis_picth_forearm", "kurtosis_yaw_forearm",
+"skewness_roll_forearm", "skewness_pitch_forearm", "skewness_yaw_forearm", "max_roll_forearm",
+"max_yaw_forearm", "min_roll_forearm", "min_yaw_forearm", "amplitude_roll_forearm",
+"amplitude_yaw_forearm", "avg_roll_forearm", "stddev_roll_forearm", "var_roll_forearm",
+"avg_pitch_forearm", "stddev_pitch_forearm", "var_pitch_forearm", "avg_yaw_forearm",
+"stddev_yaw_forearm", "var_yaw_forearm")
+
+#drop these variables
+subTraining = subTraining[!subNZVariables]
+
+#dropping the ID variable
+subTraining = subTraining[c(-1)]
+```
+
+Another issue we need to deal with is variables with a high rate of missing
+data (NAs) and exclude them from the analysis.
+```{r}
+#removing variables with too many NAs
+NAthreshold = .8
+NApercent = apply(subTraining, 2, function(x) sum(is.na(x)))/nrow(subTraining)
+subTraining = subTraining[!(NApercent)>NAthreshold]
+```
+
+With this done, we also clean the testing sets so they are consistent with the
+training set.
+
+```{r}
+#clean the testing sets like above
+clean1 = colnames(subTraining)
+clean2 = colnames(subTraining[, -53])
+subTesting = subTesting[clean1]
+pml_testing = pml_testing[clean2]
+```
+
+Finally, we set up the data for the classification by coercing the data into
+the same data type.
+```{r}
+#set up for decision trees/random forest
+
+for(i in 1:length(pml_testing)) {
+  for(j in 1:length(subTesting)) {
+    if(length(grep(names(subTesting[i]), names(pml_testing)[j]))==1) {
+      class(pml_testing[i]) = class(subTesting[i])
+    }
+  }
+}
+
+pml_testing = rbind(subTesting[2, -53], pml_testing)
+pml_testing = pml_testing[-1,]
+```
+
+# Model 1: Decision tree
+Our first model is a decision tree. We use the 'rpart' function with defaults
+and then plot the tree. Then, we predict the 'classe' variable on the 'subTesting'
+dataset. Finally, we show the confusion matrix.
+```{r}
+#model #1
+modDecTree = rpart(classe ~. , data=subTraining, method='class')
+
+#look at the decision tree model
+library(rpart.plot)
+rpart.plot(modDecTree, extra=102, under=TRUE)
+
+#prediction with model 1
+predictionDecTree = predict(modDecTree, subTesting, type='class')
+confusionMatrix(predictionDecTree, subTesting$classe)
+```
+With the decision tree model, there is `r round(confusionMatrix(predictionDecTree, subTesting$classe)$overall[1], 3)` accuracy.
+
+# Model 2: Random forest
+Now, we move to a random forest model using the 'randomForest' function with
+the default settings. We then predict the 'classe' variable in the 'subTesting'
+dataset and show the confusion matrix.
+```{r}
+#machine learning model (model 2) with random forest
+modRF = randomForest(classe ~ ., data=subTraining)
+
+predictionRF = predict(modRF, subTesting, type='class')
+confusionMatrix(predictionRF, subTesting$classe)
+```
+As expected, the random forest model is much more accurate than the decision tree
+model. The accuracy is `r round(confusionMatrix(predictionRF, subTesting$classe)$overall[1], 3)`.
+
+With the random forest model, the expected out-of-sample error is 
+`r 1 - round(confusionMatrix(predictionRF, subTesting$classe)$overall[1], 3)`, or
+1 - the accuracy.
+
+
+# Prediction for test set
+Finally, we predict the class of the test set using the random forest model.
+
+```{r}
+#for the real test set
+predictions_test = predict(modRF, pml_testing, type='class')
+predictions_test
+```
+
